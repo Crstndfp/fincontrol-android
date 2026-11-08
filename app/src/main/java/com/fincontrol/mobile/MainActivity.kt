@@ -20,6 +20,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -49,15 +50,15 @@ class MainActivity : ComponentActivity() {
 
 data class RecentMovement(
     val id: String = UUID.randomUUID().toString(),
-    val merchantName: String,
-    val categoryName: String,
-    val totalAmount: BigDecimal,
-    val personalAmount: BigDecimal,
-    val receivableAmount: BigDecimal,
-    val currency: CurrencyCode,
+    var merchantName: String,
+    var categoryName: String,
+    var totalAmount: BigDecimal,
+    var personalAmount: BigDecimal,
+    var receivableAmount: BigDecimal,
+    var currency: CurrencyCode,
     val dateFormatted: String,
     val hasAttachment: Boolean = false,
-    val isSplit: Boolean = false
+    var isSplit: Boolean = false
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -83,6 +84,11 @@ fun FinControlExpressScreen() {
     var executedMonthlyPersonalGtq by remember { mutableStateOf(BigDecimal("14250.00")) }
     val monthlyBudgetCeilingGtq = BigDecimal("27200.00")
     val netLiquidityGtq = BigDecimal("70260.00")
+
+    // Editing modal state
+    var editingMovement by remember { mutableStateOf<RecentMovement?>(null) }
+    var editMerchantText by remember { mutableStateOf("") }
+    var editPersonalAmountText by remember { mutableStateOf("") }
 
     // Last 5 movements with Swipe-to-Delete / Edit
     val recentMovements = remember {
@@ -448,7 +454,7 @@ fun FinControlExpressScreen() {
         // Module 3.3: Últimos 5 Movimientos con opción de deslizar / eliminar
         item {
             Text(
-                "Últimos 5 Movimientos (Desliza para eliminar / auditar)",
+                "Últimos 5 Movimientos (Desliza o pulsa para editar / eliminar)",
                 color = Color.LightGray,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.SemiBold
@@ -492,7 +498,13 @@ fun FinControlExpressScreen() {
                 Card(
                     colors = CardDefaults.cardColors(containerColor = Color(0xFF111827)),
                     shape = RoundedCornerShape(16.dp),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            editingMovement = item
+                            editMerchantText = item.merchantName
+                            editPersonalAmountText = item.personalAmount.toString()
+                        }
                 ) {
                     Row(
                         modifier = Modifier
@@ -550,5 +562,51 @@ fun FinControlExpressScreen() {
                 }
             }
         }
+    }
+
+    // Modal to Edit an Existing Movement (RN-04)
+    if (editingMovement != null) {
+        AlertDialog(
+            onDismissRequest = { editingMovement = null },
+            title = { Text("Editar Movimiento (RN-04)") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = editMerchantText,
+                        onValueChange = { editMerchantText = it },
+                        label = { Text("Comercio") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = editPersonalAmountText,
+                        onValueChange = { editPersonalAmountText = it },
+                        label = { Text("Gasto Propio (Q)") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val parsed = editPersonalAmountText.toBigDecimalOrNull()
+                        if (parsed != null && editingMovement != null) {
+                            val target = editingMovement!!
+                            target.merchantName = editMerchantText
+                            target.personalAmount = parsed
+                            editingMovement = null
+                            Toast.makeText(context, "Movimiento actualizado", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                ) {
+                    Text("Guardar")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { editingMovement = null }) {
+                    Text("Cancelar")
+                }
+            }
+        )
     }
 }
