@@ -1,9 +1,11 @@
 package com.fincontrol.mobile.domain
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.math.BigDecimal
+import java.time.LocalDate
 
 class SplitExpenseCalculatorTest {
 
@@ -42,6 +44,7 @@ class SplitExpenseCalculatorTest {
         assertEquals("Supermercado & Despensa", SplitExpenseCalculator.predictCategory("La Torre Zona 15"))
         assertEquals("Transporte & Combustible", SplitExpenseCalculator.predictCategory("Gasolinera Texaco"))
         assertEquals("Restaurantes & Cafés", SplitExpenseCalculator.predictCategory("Panadería San Martín"))
+        assertEquals("Salud & Farmacia", SplitExpenseCalculator.predictCategory("Farmacia Galeno"))
     }
 
     @Test
@@ -50,5 +53,18 @@ class SplitExpenseCalculatorTest {
         assertEquals(SemaphoreColor.GREEN, SplitExpenseCalculator.evaluateSemaphore(BigDecimal("799.99"), ceiling))
         assertEquals(SemaphoreColor.YELLOW, SplitExpenseCalculator.evaluateSemaphore(BigDecimal("850.00"), ceiling))
         assertEquals(SemaphoreColor.RED, SplitExpenseCalculator.evaluateSemaphore(BigDecimal("1050.00"), ceiling))
+    }
+
+    @Test
+    fun `Module 3_3 & 4_4 - Totalero countdown calculates correct days until cutoff and due date`() {
+        val reference = LocalDate.of(2026, 11, 8)
+        val status = SplitExpenseCalculator.calculateTotaleroCountdown(
+            cutoffDay = 18,
+            paymentDueDay = 8,
+            referenceDate = reference
+        )
+
+        assertEquals(10L, status.daysUntilCutoff)
+        assertTrue(status.daysUntilPaymentDue > 0)
     }
 }

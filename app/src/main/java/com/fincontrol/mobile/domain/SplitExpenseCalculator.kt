@@ -2,6 +2,8 @@ package com.fincontrol.mobile.domain
 
 import java.math.BigDecimal
 import java.math.RoundingMode
+import java.time.LocalDate
+import java.time.temporal.ChronoUnit
 
 enum class CurrencyCode {
     GTQ, USD
@@ -26,8 +28,16 @@ data class SplitCalculationResult(
     val isSplitExpense: Boolean
 )
 
+data class TotaleroStatus(
+    val daysUntilCutoff: Long,
+    val daysUntilPaymentDue: Long,
+    val isPaymentDueClose: Boolean,
+    val cutoffDateFormatted: String,
+    val paymentDueDateFormatted: String
+)
+
 /**
- * Domain Engine for Mobile Express Capture & Split Expenses (Modules 3.1, 3.2 & Scenario 1).
+ * Domain Engine for Mobile Express Capture & Split Expenses (Modules 3.1, 3.2, 3.3).
  * Uses BigDecimal with HALF_UP rounding to 2 decimal places (RN-01, RN-03, RN-05).
  */
 object SplitExpenseCalculator {
@@ -131,5 +141,38 @@ object SplitExpenseCalculator {
             ratio >= BigDecimal("0.80") -> SemaphoreColor.YELLOW
             else -> SemaphoreColor.GREEN
         }
+    }
+
+    /**
+     * Credit Card Cutoff & Totalero Due Date Countdown (Module 3.3 & 4.4)
+     */
+    fun calculateTotaleroCountdown(
+        cutoffDay: Int = 18,
+        paymentDueDay: Int = 8,
+        referenceDate: LocalDate = LocalDate.now()
+    ): TotaleroStatus {
+        val currentYear = referenceDate.year
+        val currentMonth = referenceDate.monthValue
+
+        var cutoffDate = LocalDate.of(currentYear, currentMonth, cutoffDay.coerceIn(1, 28))
+        if (referenceDate.isAfter(cutoffDate)) {
+            cutoffDate = cutoffDate.plusMonths(1)
+        }
+
+        var dueDate = LocalDate.of(cutoffDate.year, cutoffDate.monthValue, paymentDueDay.coerceIn(1, 28))
+        if (!dueDate.isAfter(cutoffDate)) {
+            dueDate = dueDate.plusMonths(1)
+        }
+
+        val daysToCutoff = ChronoUnit.DAYS.between(referenceDate, cutoffDate).coerceAtLeast(0)
+        val daysToDue = ChronoUnit.DAYS.between(referenceDate, dueDate).coerceAtLeast(0)
+
+        return TotaleroStatus(
+            daysUntilCutoff = daysToCutoff,
+            daysUntilPaymentDue = daysToDue,
+            isPaymentDueClose = daysToDue <= 5,
+            cutoffDateFormatted = cutoffDate.toString(),
+            paymentDueDateFormatted = dueDate.toString()
+        )
     }
 }
