@@ -17,11 +17,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CalendarToday
-import androidx.compose.material.icons.filled.CameraAlt
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Receipt
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -32,7 +28,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import com.fincontrol.mobile.data.sync.ApiClientProvider
+import com.fincontrol.mobile.data.sync.ExpenseSyncWorker
 import com.fincontrol.mobile.domain.*
+import kotlinx.coroutines.launch
 import java.math.BigDecimal
 import java.time.LocalDate
 import java.util.*
@@ -58,13 +59,22 @@ data class RecentMovement(
     var currency: CurrencyCode,
     val dateFormatted: String,
     val hasAttachment: Boolean = false,
-    var isSplit: Boolean = false
+    var isSplit: Boolean = false,
+    var syncStatus: String = "PENDING_SYNC"
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FinControlExpressScreen() {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+
+    // Server Configuration & Sync Status
+    var currentServerUrl by remember { mutableStateOf(ApiClientProvider.getServerUrl(context)) }
+    var showServerConfigDialog by remember { mutableStateOf(false) }
+    var tempServerUrlInput by remember { mutableStateOf(currentServerUrl) }
+    var lastSyncText by remember { mutableStateOf("Pendiente sincronización") }
+    var isSyncing by remember { mutableStateOf(false) }
 
     // Module 3.1: Direct numeric input (< 5 seconds capture)
     var amountInput by remember { mutableStateOf("600") }
@@ -80,10 +90,10 @@ fun FinControlExpressScreen() {
     var selectedPct by remember { mutableStateOf(BigDecimal("50")) }
     var exactPersonalInput by remember { mutableStateOf("200") }
 
-    // Module 3.3: Mini Dashboard State
+    // Module 3.3: Mini Dashboard State (Cached from local Room & Pull updates)
     var executedMonthlyPersonalGtq by remember { mutableStateOf(BigDecimal("14250.00")) }
-    val monthlyBudgetCeilingGtq = BigDecimal("27200.00")
-    val netLiquidityGtq = BigDecimal("70260.00")
+    var monthlyBudgetCeilingGtq by remember { mutableStateOf(BigDecimal("27200.00")) }
+    var netLiquidityGtq by remember { mutableStateOf(BigDecimal("70260.00")) }
 
     // Editing modal state
     var editingMovement by remember { mutableStateOf<RecentMovement?>(null) }
@@ -101,7 +111,8 @@ fun FinControlExpressScreen() {
                 receivableAmount = BigDecimal("300.00"),
                 currency = CurrencyCode.GTQ,
                 dateFormatted = "Hoy 13:40",
-                isSplit = true
+                isSplit = true,
+                syncStatus = "PENDING_SYNC"
             ),
             RecentMovement(
                 merchantName = "Supermercados La Torre",
@@ -111,7 +122,8 @@ fun FinControlExpressScreen() {
                 receivableAmount = BigDecimal("300.00"),
                 currency = CurrencyCode.GTQ,
                 dateFormatted = "Ayer 19:15",
-                isSplit = true
+                isSplit = true,
+                syncStatus = "SYNCED"
             ),
             RecentMovement(
                 merchantName = "Gasolinera Texaco",
@@ -121,7 +133,8 @@ fun FinControlExpressScreen() {
                 receivableAmount = BigDecimal("0.00"),
                 currency = CurrencyCode.GTQ,
                 dateFormatted = "06 Nov",
-                isSplit = false
+                isSplit = false,
+                syncStatus = "SYNCED"
             ),
             RecentMovement(
                 merchantName = "Farmacia Galeno",
@@ -132,7 +145,8 @@ fun FinControlExpressScreen() {
                 currency = CurrencyCode.GTQ,
                 dateFormatted = "04 Nov",
                 hasAttachment = true,
-                isSplit = false
+                isSplit = false,
+                syncStatus = "SYNCED"
             ),
             RecentMovement(
                 merchantName = "Amazon AWS Services",
@@ -142,7 +156,8 @@ fun FinControlExpressScreen() {
                 receivableAmount = BigDecimal("0.00"),
                 currency = CurrencyCode.USD,
                 dateFormatted = "02 Nov",
-                isSplit = false
+                isSplit = false,
+                syncStatus = "SYNCED"
             )
         )
     }
@@ -201,6 +216,18 @@ fun FinControlExpressScreen() {
         "Estilo de Vida / General"
     )
 
+    fun triggerSync() {
+        isSyncing = true
+        val syncWork = OneTimeWorkRequestBuilder<ExpenseSyncWorker>().build()
+        WorkManager.getInstance(context).enqueue(syncWork)
+
+        // Optimistic local feedback
+        recentMovements.forEach { it.syncStatus = "SYNCED" }
+        lastSyncText = "Sincronizado: ${java.time.LocalTime.now().toString().take(5)}"
+        isSyncing = false
+        Toast.makeText(context, "Sincronizando con red local...", Toast.LENGTH_SHORT).show()
+    }
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -208,6 +235,64 @@ fun FinControlExpressScreen() {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        // LAN Connectivity & Offline Header Status
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .background(Color(0xFF34D399), RoundedCornerShape(4.dp))
+                            )
+                            Text(
+                                "Modo Offline Activo (Red Interna)",
+                                color = Color.White,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Text(
+                            text = lastSyncText,
+                            color = Color.LightGray,
+                            fontSize = 11.sp
+                        )
+                    }
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        IconButton(onClick = { triggerSync() }) {
+                            Icon(
+                                Icons.Default.Sync,
+                                contentDescription = "Sincronizar",
+                                tint = if (isSyncing) Color(0xFF818CF8) else Color(0xFF34D399)
+                            )
+                        }
+                        IconButton(onClick = {
+                            tempServerUrlInput = currentServerUrl
+                            showServerConfigDialog = true
+                        }) {
+                            Icon(
+                                Icons.Default.Settings,
+                                contentDescription = "Configurar IP Local",
+                                tint = Color.LightGray
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
         // Mini Executive Dashboard Header (Module 3.3)
         item {
             Card(
@@ -434,24 +519,25 @@ fun FinControlExpressScreen() {
                                         currency = currency,
                                         dateFormatted = "Justo ahora",
                                         hasAttachment = attachedPhotoUri != null,
-                                        isSplit = isSplitEnabled
+                                        isSplit = isSplitEnabled,
+                                        syncStatus = "PENDING_SYNC"
                                     )
                                 )
                                 if (recentMovements.size > 5) {
                                     recentMovements.removeLast()
                                 }
-                                Toast.makeText(context, "Gasto guardado (< 5s)", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "Gasto guardado offline (< 5s)", Toast.LENGTH_SHORT).show()
                             }
                         },
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("Guardar Gasto Express y Sincronizar")
+                        Text("Guardar Gasto Express (<5s)")
                     }
                 }
             }
         }
 
-        // Module 3.3: Últimos 5 Movimientos con opción de deslizar / eliminar
+        // Module 3.3: Últimos 5 Movimientos con estado de sincronización
         item {
             Text(
                 "Últimos 5 Movimientos (Desliza o pulsa para editar / eliminar)",
@@ -514,12 +600,27 @@ fun FinControlExpressScreen() {
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                item.merchantName,
-                                color = Color.White,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 14.sp
-                            )
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text(
+                                    item.merchantName,
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp
+                                )
+                                if (item.syncStatus == "PENDING_SYNC") {
+                                    Surface(
+                                        color = Color(0xFFF59E0B).copy(alpha = 0.2f),
+                                        shape = RoundedCornerShape(4.dp)
+                                    ) {
+                                        Text(
+                                            "Offline",
+                                            color = Color(0xFFF59E0B),
+                                            fontSize = 9.sp,
+                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                            }
                             Text(
                                 "${item.categoryName} • ${item.dateFormatted}",
                                 color = Color.Gray,
@@ -604,6 +705,51 @@ fun FinControlExpressScreen() {
             },
             dismissButton = {
                 TextButton(onClick = { editingMovement = null }) {
+                    Text("Cancelar")
+                }
+            }
+        )
+    }
+
+    // Modal to Configure Internal Server LAN URL (HTTP / HTTPS)
+    if (showServerConfigDialog) {
+        AlertDialog(
+            onDismissRequest = { showServerConfigDialog = false },
+            title = { Text("Configuración de Servidor Local") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Ingresa la dirección IP interna de tu servidor local (HTTP o HTTPS):",
+                        fontSize = 12.sp,
+                        color = Color.LightGray
+                    )
+                    OutlinedTextField(
+                        value = tempServerUrlInput,
+                        onValueChange = { tempServerUrlInput = it },
+                        label = { Text("URL Base del Backend") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        "Ejemplos:\n• Red LAN: http://192.168.1.150:3000/api/v1/\n• Emulador: http://10.0.2.2:3000/api/v1/\n• HTTPS local: https://fincontrol.local/api/v1/",
+                        fontSize = 11.sp,
+                        color = Color.Gray
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        ApiClientProvider.setServerUrl(context, tempServerUrlInput)
+                        currentServerUrl = ApiClientProvider.getServerUrl(context)
+                        showServerConfigDialog = false
+                        Toast.makeText(context, "URL del servidor actualizada", Toast.LENGTH_SHORT).show()
+                    }
+                ) {
+                    Text("Guardar")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showServerConfigDialog = false }) {
                     Text("Cancelar")
                 }
             }
