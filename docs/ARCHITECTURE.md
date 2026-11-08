@@ -1,35 +1,36 @@
-# Arquitectura Móvil — FinControl Android (Offline-First & Captura < 5s)
+# Arquitectura Móvil — FinControl Android (Offline-First & Red Local LAN)
 
-## 1. Propósito del Componente Móvil
-Eliminar la fricción de entrada en el punto de venta (compras en efectivo, gastos informales sin NIT/factura `RN-03`, y cenas o supermercados compartidos `RN-01`) garantizando que registrar un gasto tome **menos de 5 segundos**.
+## 1. Contexto de Red & Operación Offline
+La aplicación opera la mayor parte del tiempo **desconectada (Offline)** en el punto de venta (restaurantes, comercios, gasolineras). El servidor backend (`fincontrol-web`) reside en una **red interna local (LAN/On-Premise)** sin salida pública a internet.
 
 ```mermaid
 flowchart TD
-    U["Usuario en Punto de Venta"] --> UI["MainActivity (Jetpack Compose M3)"]
-    UI --> VM["FinControlViewModel (StateFlow)"]
-    VM --> CALC["SplitExpenseCalculator (Domain Engine)"]
-    VM --> REPO["ExpenseRepository (Single Source of Truth)"]
-    REPO --> ROOM[("Room SQLite (Local Instantáneo <100ms)")]
-    REPO --> WM["WorkManager (OneTimeWorkRequest)"]
-    WM -->|POST /api/v1/transactions| API["fincontrol-web API"]
-    API --> PG[("PostgreSQL 16 (Auditoría & Conciliación)")]
+    subgraph Exterior["🛍️ Punto de Venta (100% Offline)"]
+        U["Usuario"] --> CAP["Captura Express (< 5s)\nTeclado Numérico + Split"]
+        CAP --> ROOM[("Room SQLite\nPersistencia Instantánea\n(syncStatus = PENDING_SYNC)")]
+    end
+
+    subgraph OficinaHogar["🏠 Conexión a Red Local (LAN / WiFi)"]
+        ROOM --> AUTO["Detección Automática\nde Red Interna"]
+        ROOM --> BTN["Botón Manual 'Sincronizar'\nen Cabecera"]
+        AUTO --> WORKER["ExpenseSyncWorker (WorkManager)"]
+        BTN --> WORKER
+        WORKER -->|POST /api/v1/sync\n(Push Gastos + Pull Estado)| SERVER["Servidor Interno Next.js\n(HTTP o HTTPS Local)"]
+        SERVER --> ROOM
+    end
 ```
 
-## 2. Capas de la Arquitectura (Clean Architecture + MVVM)
-- **`domain/` (`SplitExpenseCalculator.kt`):**
-  - Motor aritmético con `BigDecimal` (`RoundingMode.HALF_UP`) para desglose exacto entre `personalAmountGtq` (afecta el presupuesto 50/30/20) y `receivableAmountGtq` (activo circulante por cobrar).
-  - Clasificador predictivo de comercios frecuentes (`La Torre`, `Texaco`, `San Martín`, `Farmacia Galeno`).
-  - Evaluador del semáforo mensual (`GREEN` < 80%, `YELLOW` 80%-100%, `RED` > 100%).
-  - Cálculo dinámico de cuenta regresiva Totalero (`calculateTotaleroCountdown`) para fechas de corte y pago de contado a tasa 0%.
-- **`data/local/` (`LocalExpenseDatabase.kt`):**
-  - Persistencia **Offline-First** con Room SQLite. El usuario guarda el gasto en milisegundos aun sin señal celular en parqueos o sótanos comerciales.
-- **`data/repository/` (`ExpenseRepository.kt`):**
-  - Orquestador de persistencia reactiva que emite flujos `Flow<List<LocalExpenseEntity>>` hacia la UI y despacha tareas diferidas con `WorkManager`.
-- **`data/sync/` (`ExpenseSyncWorker.kt`):**
-  - Sincronización en segundo plano mediante `WorkManager` y `Retrofit` hacia el endpoint unificado `POST /api/v1/transactions` de `fincontrol-web`, marcando el registro como `PENDING_STATEMENT_MATCH` para evitar duplicidad cuando se cargue el PDF del estado de cuenta bancario.
-- **`ui/` (`MainActivity.kt` & `FinControlViewModel.kt`):**
-  - Interfaz en **Jetpack Compose (Material 3)**:
-    - Teclado numérico directo al abrir.
-    - Mini Dashboard Financiero (Liquidez, Semáforo 50/30/20, Alerta Totalero).
-    - Lista de últimos 5 movimientos con gestos de deslizamiento (*Swipe-to-Dismiss*) y modal de edición rápida (`RN-04`).
-    - Selector de fecha emergente y captura opcional de ticket sin bloqueo (`RN-03`).
+## 2. Mecanismo de Sincronización Bidireccional (`POST /api/v1/sync`)
+1. **Push (Subida)**:
+   - Recopila todas las transacciones guardadas localmente con `syncStatus = 'PENDING_SYNC'` y las envía en bloque al backend.
+   - Tras recibir respuesta exitosa, se actualizan localmente a `SYNCED_AWAITING_PDF_RECONCILE`.
+2. **Pull (Bajada & Cache)**:
+   - El backend retorna los saldos actualizados de cuentas (tras procesar extractos PDF en la web), el techo presupuestario 50/30/20 y la cuenta regresiva de tarjetas Totalero.
+   - Estos valores se almacenan localmente para que el Mini Dashboard funcione de forma autónoma aun cuando el usuario vuelva a salir a la calle.
+
+## 3. Configuración de Red Local (HTTP y HTTPS)
+- **`app/src/main/res/xml/network_security_config.xml`**:
+  - Habilita `cleartextTrafficPermitted="true"` para permitir conexiones HTTP directas a IPs de red local (`192.168.*`, `10.*`, `172.16.*`, `10.0.2.2`).
+  - Habilita certificados de usuario y de sistema para permitir conexiones seguras HTTPS con certificados autofirmados o CAs privadas internas.
+- **Configurador de URL en Caliente (UI)**:
+  - Icono de engrane en la cabecera que permite al usuario definir la URL base del servidor (ej. `http://192.168.1.150:3000/api/v1/`), almacenada en `SharedPreferences` sin necesidad de recompilar el código.
